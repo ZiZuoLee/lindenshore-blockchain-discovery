@@ -1218,6 +1218,44 @@ not a guaranteed profitable arbitrage opportunity.
 
 A complete profitability model would additionally require route simulation, gas estimation, slippage, available liquidity, and execution-risk modeling.
 
+
+### Case Study: Strongest Fee-Adjusted Signal
+
+To better understand what the detector was identifying, I manually
+inspected the transaction associated with the strongest fee-adjusted
+candidate signal.
+
+The event occurred in block `50131428` and was associated with
+transaction:
+
+`0x97615d278bca7b01c4a559893d55aba3d1740f9612cf07a4884346a5b94a70b4`
+
+The V3 WETH/USDC leg exchanged approximately **2.2472 WETH** for
+**4,272.39 USDC** through the 0.01% Uniswap v3 pool. Immediately after
+this state update, the reconstructed cross-pool spread against the
+0.05% pool was approximately **11.68 bps**, leaving approximately
+**5.68 bps** after subtracting both pools' LP fees.
+
+Manual inspection on BaseScan showed that this transaction was not
+itself a simple cross-pool arbitrage trade. Instead, it was part of a
+larger routed transaction:
+
+`POD -> WETH -> USDC`
+
+The first leg interacted with the Uniswap v4 Pool Manager, while the
+second leg routed WETH through the Uniswap v3 0.01% WETH/USDC pool.
+
+This case illustrates an important limitation of automated arbitrage
+detection: a positive cross-pool price edge identifies an interesting
+**market state**, not necessarily an arbitrage transaction. The
+transaction that creates a dislocation may be ordinary routed order
+flow, while a separate participant may later trade against the
+resulting discrepancy.
+
+The case study therefore reinforces the project's broader conclusion
+that price-spread detection should be treated as the beginning of an
+arbitrage analysis rather than proof of arbitrage or MEV activity.
+
 ---
 
 ## Final Interpretation
@@ -1390,7 +1428,7 @@ It does not prove that:
 - a specific transaction is MEV,
 - or a participant intentionally performed arbitrage.
 
-More detailed tracing would be required for attribution.
+Manual inspection of the strongest detected candidate confirmed this distinction: the triggering transaction was a routed POD -> WETH -> USDC trade rather than direct cross-pool arbitrage.
 
 ---
 
