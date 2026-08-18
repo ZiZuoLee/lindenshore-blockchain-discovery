@@ -1,15 +1,19 @@
 import json
 
-from src.analysis import run_analysis
+from src.analysis import (
+    run_analysis,
+)
 
 
 def main() -> None:
 
-    results = run_analysis()
+    results = (
+        run_analysis()
+    )
 
     print()
     print(
-        "=" * 70
+        "=" * 72
     )
 
     print(
@@ -18,7 +22,7 @@ def main() -> None:
     )
 
     print(
-        "=" * 70
+        "=" * 72
     )
 
     print()
@@ -29,8 +33,8 @@ def main() -> None:
     )
 
     print(
-        f"Cross-pool matches: "
-        f"{results['matches']:,}"
+        "Market-state observations: "
+        f"{results['market_state_observations']:,}"
     )
 
     print()
@@ -49,7 +53,7 @@ def main() -> None:
 
     print()
     print(
-        "Spread summary:"
+        "Spread / arbitrage summary:"
     )
 
     print(
@@ -72,10 +76,47 @@ def main() -> None:
         )
     )
 
+    candidates = results[
+        "arbitrage_candidates"
+    ]
+
     print()
     print(
-        "Generated files are available "
-        "in output/."
+        "Fee-adjusted candidate "
+        "arbitrage observations: "
+        f"{len(candidates):,}"
+    )
+
+    if not candidates.empty:
+
+        print()
+        print(
+            "Top candidate signals:"
+        )
+
+        columns = [
+            "timestamp",
+            "block_number",
+            "buy_price",
+            "sell_price",
+            "fee_adjusted_edge_bps",
+            "trigger_swap_usd",
+        ]
+
+        print(
+            candidates[
+                columns
+            ]
+            .head(10)
+            .to_string(
+                index=False
+            )
+        )
+
+    print()
+    print(
+        "Generated files are "
+        "available in output/."
     )
 
 

@@ -2,14 +2,12 @@
 .venv/
 venv/
 
-# Environment variables
+# Environment secrets
 .env
 
 # Python
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
 .pytest_cache/
 
 # IDE
@@ -20,17 +18,20 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Generated data
+# Local databases
 data/*.db
 data/*.sqlite
 data/*.sqlite3
+
+# Generated datasets
 data/*.csv
+!data/sample_swaps.csv
 
 # Generated analysis
-output/*.png
 output/*.csv
 output/*.json
+!output/summary.json
 
-# Keep directories in Git
-!data/.gitkeep
-!output/.gitkeep
+# Keep final charts in Git
+# Uncomment the following if you DO NOT want charts committed:
+# output/*.png

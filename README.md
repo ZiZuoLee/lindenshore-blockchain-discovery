@@ -8,21 +8,15 @@ This project was developed for the **Lindenshore Technical Assessment: Blockchai
 
 ## TL;DR
 
-This project connects directly to the Base blockchain through JSON-RPC, discovers Uniswap v3 WETH/USDC pools from the canonical Uniswap v3 Factory, collects `Swap` events with `eth_getLogs`, stores the raw data in SQLite, converts Uniswap v3 `sqrtPriceX96` values into human-readable prices, and analyzes cross-pool price dislocations.
+I collected **13,780 Uniswap v3 WETH/USDC Swap events** directly from Base using JSON-RPC and reconstructed **27,215 recent cross-pool market-state observations**.
 
-The main research question is:
+The median observed cross-pool price difference was **4.33 basis points**, but only **8 observations (0.029%)** remained positive after accounting for both Uniswap liquidity-provider fees.
 
-> **How efficiently do independent Uniswap v3 WETH/USDC pools on Base remain synchronized, and do temporary price dislocations create observable arbitrage signals?**
+Trades above approximately **$10,000** were associated with much larger cross-pool price dislocations than smaller trades in this sample.
 
-The analysis focuses on:
+The main conclusion is:
 
-- activity across fee tiers,
-- cross-pool WETH/USDC price differences,
-- the relationship between swap size and price dislocation,
-- how quickly large dislocations disappear,
-- and whether observed price spreads remain positive after accounting for Uniswap liquidity-provider fees.
-
-The project deliberately distinguishes **observable price dislocations** from **guaranteed executable arbitrage**. A positive observed spread can still disappear after accounting for pool fees, gas, slippage, price impact, state changes, and competition.
+> **Raw DEX price differences substantially overstate economically meaningful arbitrage opportunities.**
 
 ---
 
@@ -37,48 +31,48 @@ For WETH/USDC, these pools can temporarily disagree on price because:
 3. a large trade can move one pool more than another,
 4. arbitrageurs can subsequently trade against the discrepancy.
 
-This project investigates the following questions:
+This project investigates:
 
-1. Which WETH/USDC Uniswap v3 fee tiers are the most active on Base?
+1. Which WETH/USDC Uniswap v3 fee tiers are most active on Base?
 2. How large are cross-pool price differences under normal conditions?
 3. Are larger swaps associated with larger temporary price dislocations?
 4. How quickly do large dislocations recover?
-5. How many apparent arbitrage opportunities remain after accounting for both Uniswap pool fees?
+5. How many observed spreads remain positive after accounting for both Uniswap LP fees?
 
 ---
 
 ## Why This Dataset?
 
-Decentralized exchange liquidity is fragmented.
+DEX liquidity is fragmented across independent pools.
 
-Even when several pools trade the same pair, each pool independently maintains:
+Even when several pools trade the same asset pair, each pool maintains its own:
 
 - liquidity,
-- reserves,
 - tick state,
-- price,
-- and fee configuration.
+- post-swap price,
+- fee tier,
+- and transaction flow.
 
-That fragmentation makes cross-pool synchronization an interesting market-microstructure problem.
+This fragmentation creates a market-microstructure question:
 
-If one pool is moved significantly by a large trade, another pool may temporarily quote a different price for the same asset. In theory, arbitrageurs can exploit that difference and cause prices to converge again.
+> When one pool temporarily disagrees with another on the price of WETH, is the discrepancy large enough to matter economically?
 
-This makes Uniswap v3 WETH/USDC data useful for studying:
+This makes the dataset useful for studying:
 
-- arbitrage,
+- arbitrage detection,
 - MEV-related behavior,
-- execution quality,
-- DEX market efficiency,
+- trade execution,
 - liquidity fragmentation,
+- market efficiency,
 - and price-impact risk.
 
-Base was selected because it is an EVM-compatible Layer 2 network with public JSON-RPC access and active decentralized-exchange usage.
+Base was selected because it is an EVM-compatible network with public JSON-RPC access and active decentralized-exchange usage.
 
 ---
 
-## Data Source
+# Data Source
 
-All primary blockchain data is collected directly from **Base Mainnet** through Ethereum JSON-RPC.
+All primary blockchain data is collected directly from **Base Mainnet** using Ethereum JSON-RPC.
 
 Default RPC endpoint:
 
@@ -92,29 +86,27 @@ Base Mainnet chain ID:
 8453
 ```
 
-The project does **not** depend on a subgraph or centralized blockchain indexer for its core dataset.
+The project does **not** depend on a subgraph or centralized blockchain indexer for its core transaction dataset.
 
-The collector primarily uses:
+The main RPC operation used for historical swap collection is:
 
 ```text
 eth_getLogs
 ```
 
-to retrieve Uniswap v3 `Swap` events directly from Base.
-
 ---
 
-## Protocol
+# Protocol
 
-The project analyzes **Uniswap v3**.
+The project analyzes **Uniswap v3 WETH/USDC pools on Base**.
 
-Rather than hard-coding individual pool addresses, the application queries the canonical Uniswap v3 Factory deployment on Base and calls:
+Rather than hard-coding pool addresses, the application queries the canonical Uniswap v3 Factory deployment and calls:
 
 ```solidity
 getPool(tokenA, tokenB, fee)
 ```
 
-for the configured WETH/USDC fee tiers.
+for configured WETH/USDC fee tiers.
 
 Canonical Base Uniswap v3 Factory:
 
@@ -133,27 +125,32 @@ Configured fee tiers:
 
 ---
 
-## Tokens
+# Tokens
 
-### WETH
+## WETH
 
 ```text
 0x4200000000000000000000000000000000000006
 ```
 
-### USDC
+## USDC
 
 ```text
 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
 ```
 
-Token metadata such as `symbol()` and `decimals()` is queried directly from the ERC-20 contracts and stored locally.
+Token metadata is queried directly from the ERC-20 contracts using:
 
-The analysis therefore does not rely on hard-coded assumptions about token decimal precision.
+```solidity
+symbol()
+decimals()
+```
+
+This avoids relying on hard-coded decimal assumptions.
 
 ---
 
-## Architecture
+# Architecture
 
 ```text
                        Base Mainnet
@@ -179,12 +176,13 @@ The analysis therefore does not rely on hard-coded assumptions about token decim
               |                           |
               v                           v
        Token Normalization          Pool Price Decode
-                                       sqrtPriceX96
+                                      sqrtPriceX96
               |                           |
               +-------------+-------------+
                             |
                             v
-                   Cross-Pool Matching
+                 Ordered Market-State
+                    Reconstruction
                             |
               +-------------+-------------+
               |             |             |
@@ -195,63 +193,62 @@ The analysis therefore does not rely on hard-coded assumptions about token decim
               +-------------+-------------+
                             |
                             v
+              Arbitrage Candidate Filter
+                            |
+                            v
                 CSV + JSON + PNG Outputs
 ```
 
 ---
 
-## Repository Structure
+# Repository Structure
 
 ```text
 lindenshore-blockchain-discovery/
 │
-├── .env
-├── .env.example
-├── .gitignore
 ├── README.md
 ├── requirements.txt
+├── .env.example
+├── .gitignore
 ├── main.py
 │
 ├── src/
 │   ├── __init__.py
-│   ├── config.py
 │   ├── abis.py
-│   ├── rpc.py
-│   ├── database.py
-│   ├── tokens.py
-│   ├── pools.py
+│   ├── analysis.py
 │   ├── collector.py
+│   ├── config.py
+│   ├── database.py
+│   ├── pools.py
 │   ├── pricing.py
-│   └── analysis.py
+│   ├── rpc.py
+│   └── tokens.py
 │
 ├── scripts/
 │   ├── __init__.py
-│   ├── discover_pools.py
 │   ├── collect_swaps.py
-│   └── run_analysis.py
+│   ├── discover_pools.py
+│   ├── run_analysis.py
+│   └── validate_data.py
 │
 ├── tests/
 │   ├── __init__.py
-│   ├── test_pricing.py
-│   └── test_database.py
+│   ├── test_analysis.py
+│   ├── test_database.py
+│   └── test_pricing.py
 │
 ├── data/
-│   └── blockchain.db
+│   └── sample_swaps.csv
 │
 └── output/
     ├── 01_pool_prices.png
     ├── 02_spread_distribution.png
     ├── 03_swap_size_vs_spread.png
     ├── 04_recovery_times.png
-    ├── pool_activity.csv
-    ├── processed_swaps.csv
-    ├── cross_pool_matches.csv
-    ├── swap_size_analysis.csv
-    ├── recovery_events.csv
     └── summary.json
 ```
 
-Generated database and analysis files are excluded from Git by default because they can be reproduced from the blockchain.
+Generated databases and large analysis CSV files are intentionally excluded from version control because they can be recreated from public blockchain data.
 
 ---
 
@@ -261,11 +258,11 @@ Generated database and analysis files are excluded from Git by default because t
 
 The project connects to Base using `web3.py`.
 
-The RPC module verifies:
+The RPC layer verifies:
 
-- that the endpoint is reachable,
-- that the connection succeeds,
-- and that the returned chain ID is `8453`.
+- the endpoint is reachable,
+- the connection succeeds,
+- and the returned chain ID is `8453`.
 
 Example:
 
@@ -283,9 +280,9 @@ if w3.eth.chain_id != 8453:
 
 ## 2. Pool Discovery
 
-The Uniswap v3 Factory contract is queried for WETH/USDC pools.
+The Uniswap v3 Factory contract is queried for WETH/USDC pools across the configured fee tiers.
 
-For each configured fee tier:
+For each fee tier:
 
 ```python
 factory.functions.getPool(
@@ -297,13 +294,13 @@ factory.functions.getPool(
 
 If the returned address is not the zero address, the pool exists and is included in the dataset.
 
-The application then queries the pool contract for:
+The pool contract is then queried for:
 
 - `token0()`
 - `token1()`
 - `fee()`
 
-This makes the pool-discovery process reproducible and avoids depending on manually copied pool addresses.
+This makes pool discovery reproducible and avoids depending on manually copied addresses.
 
 ---
 
@@ -318,9 +315,7 @@ decimals()
 
 The metadata is stored in SQLite.
 
-This is important because blockchain token quantities are integers and must be converted using the token's actual number of decimal places.
-
-For example:
+Raw token amounts are converted with:
 
 ```text
 human_amount =
@@ -331,7 +326,7 @@ raw_amount / 10^decimals
 
 ## 4. Swap Event Collection
 
-Uniswap v3 pools emit the following event:
+Uniswap v3 pools emit:
 
 ```solidity
 event Swap(
@@ -357,134 +352,7 @@ with filters for:
 - block range,
 - and the `Swap` event topic.
 
----
-
-## 5. Block-Range Chunking
-
-Historical blockchain log requests can become large.
-
-To avoid oversized RPC requests, the requested block interval is divided into smaller chunks.
-
-Example:
-
-```text
-50134595 - 50134794
-50134795 - 50134994
-50134995 - 50135194
-...
-```
-
-Each successful chunk is processed independently.
-
-The default chunk size is configurable.
-
-If the free RPC endpoint rejects large requests, the user can reduce the size:
-
-```bash
-python -m scripts.collect_swaps --days 1 --chunk-size 200
-```
-
-or:
-
-```bash
-python -m scripts.collect_swaps --days 1 --chunk-size 100
-```
-
----
-
-## 6. RPC Retry Logic
-
-RPC failures may occur because of:
-
-- rate limits,
-- temporary network errors,
-- response-size limits,
-- or public-node congestion.
-
-RPC calls therefore use exponential backoff.
-
-The retry sequence is approximately:
-
-```text
-1 second
-2 seconds
-4 seconds
-8 seconds
-16 seconds
-```
-
-This makes long-running historical collection more robust.
-
----
-
-## 7. Checkpointing
-
-For every pool, the collector stores:
-
-```text
-last_processed_block
-```
-
-inside the `collector_state` table.
-
-The checkpoint is only advanced after an entire block chunk has completed successfully.
-
-This means a failed collection can resume from the last successful chunk rather than starting from the beginning.
-
----
-
-## 8. Duplicate Protection
-
-Every swap is uniquely identified by:
-
-```text
-transaction_hash + log_index
-```
-
-SQLite enforces:
-
-```sql
-UNIQUE(transaction_hash, log_index)
-```
-
-The collector also uses `INSERT OR IGNORE`.
-
-This prevents duplicate records when data collection is resumed or repeated.
-
----
-
-# SQLite Schema
-
-The local database contains four main tables.
-
-## `tokens`
-
-Stores token metadata.
-
-```text
-address
-symbol
-decimals
-```
-
----
-
-## `pools`
-
-Stores discovered Uniswap pools.
-
-```text
-address
-token0
-token1
-fee
-```
-
----
-
-## `swaps`
-
-Stores raw on-chain Swap event data.
+For each Swap event, the project stores:
 
 ```text
 chain
@@ -504,13 +372,140 @@ liquidity
 tick
 ```
 
-Raw large blockchain integer values are preserved instead of prematurely converting them into floating-point database values.
+---
+
+## 5. Block-Range Chunking
+
+Large historical log requests can exceed public RPC limits.
+
+The collector therefore divides the requested block interval into smaller chunks.
+
+Example:
+
+```text
+50130000 - 50130499
+50130500 - 50130999
+50131000 - 50131499
+...
+```
+
+The chunk size is configurable.
+
+If the public RPC rejects large requests, the user can reduce it:
+
+```bash
+python -m scripts.collect_swaps --days 1 --chunk-size 200
+```
+
+or:
+
+```bash
+python -m scripts.collect_swaps --days 1 --chunk-size 100
+```
 
 ---
 
-## `collector_state`
+## 6. RPC Retry Logic
 
-Stores collection progress:
+RPC calls can fail because of:
+
+- public-node congestion,
+- network errors,
+- response-size limits,
+- or rate limits.
+
+The RPC helper therefore uses exponential backoff.
+
+Approximate retry delays:
+
+```text
+1 second
+2 seconds
+4 seconds
+8 seconds
+16 seconds
+```
+
+---
+
+## 7. Checkpointing
+
+For every pool, the collector stores:
+
+```text
+last_processed_block
+```
+
+inside the `collector_state` table.
+
+The checkpoint is only updated after an entire block chunk completes successfully.
+
+This allows interrupted collection to resume from the last successful block range.
+
+---
+
+## 8. Duplicate Protection
+
+Every event is uniquely identified by:
+
+```text
+transaction_hash + log_index
+```
+
+SQLite enforces:
+
+```sql
+UNIQUE(transaction_hash, log_index)
+```
+
+The collector also uses `INSERT OR IGNORE`, preventing duplicated records when a collection is repeated.
+
+---
+
+# SQLite Schema
+
+The local database contains four main tables.
+
+## `tokens`
+
+```text
+address
+symbol
+decimals
+```
+
+## `pools`
+
+```text
+address
+token0
+token1
+fee
+```
+
+## `swaps`
+
+```text
+chain
+block_number
+block_timestamp
+transaction_hash
+transaction_index
+log_index
+pool_address
+fee_tier
+sender
+recipient
+amount0_raw
+amount1_raw
+sqrt_price_x96
+liquidity
+tick
+```
+
+Raw large integer values are preserved in SQLite instead of being prematurely converted into floating-point storage.
+
+## `collector_state`
 
 ```text
 pool_address
@@ -522,7 +517,7 @@ updated_at
 
 # Price Calculation
 
-## Token Amounts
+## Human-Readable Token Amounts
 
 Raw ERC-20 values are converted using:
 
@@ -531,7 +526,7 @@ human amount =
 raw amount / 10^token_decimals
 ```
 
-For example:
+Example:
 
 ```text
 1,000,000 raw USDC
@@ -544,22 +539,20 @@ with 6 decimals
 
 ## Execution Price
 
-A swap contains both token quantities.
-
-Once token ordering has been normalized into WETH and USDC:
+Once the token ordering is normalized into WETH and USDC:
 
 ```text
 execution price =
 |USDC amount / WETH amount|
 ```
 
-This represents the average execution price of that individual swap.
+This represents the swap's average execution price.
 
 ---
 
 ## `sqrtPriceX96`
 
-Uniswap v3 stores its pool price using a Q64.96 fixed-point representation.
+Uniswap v3 stores pool price using Q64.96 fixed-point representation.
 
 Conceptually:
 
@@ -579,14 +572,14 @@ raw_price =
 (sqrtPriceX96 / 2^96)^2
 ```
 
-The value must then be corrected for token decimals:
+The price is then adjusted for token decimals:
 
 ```text
 human token1/token0 price =
 raw_price × 10^(decimals0 - decimals1)
 ```
 
-Finally, the application normalizes the value into:
+Finally, the project normalizes the result into:
 
 ```text
 USDC per WETH
@@ -596,21 +589,43 @@ regardless of whether WETH is `token0` or `token1`.
 
 ---
 
-# Cross-Pool Matching
+# Ordered Market-State Reconstruction
 
-Pools do not necessarily emit Swap events at exactly the same timestamp.
-
-To compare independent pool states, each swap observation is matched against the nearest observed Swap event from another pool within a configurable time tolerance.
-
-The current discovery configuration uses:
+The analysis processes Swap events in deterministic blockchain order:
 
 ```text
-maximum timestamp difference = 10 seconds
+block_number
+    ↓
+transaction_index
+    ↓
+log_index
 ```
 
-This is an observational approximation.
+After each Swap event:
 
-It allows the project to study cross-pool price behavior, but it does **not** imply that both prices were simultaneously executable at the exact same blockchain state.
+1. the affected pool's latest post-swap price is updated;
+2. the affected pool is compared against the latest known state of every other active WETH/USDC pool;
+3. comparisons between two unaffected pools are not duplicated.
+
+This avoids associating an unrelated trigger swap with a pool pair that did not change.
+
+---
+
+# State Freshness
+
+Pools do not update continuously.
+
+A low-activity pool may retain an old observed price while other pools continue trading.
+
+To avoid treating stale prices as contemporaneous quotes, this analysis excludes cross-pool comparisons when the other pool's latest observed state is more than:
+
+```text
+60 seconds
+```
+
+old.
+
+This is still an approximation rather than exact historical state simulation, but it materially reduces false dislocations caused by inactive pools.
 
 ---
 
@@ -623,7 +638,7 @@ price_a
 price_b
 ```
 
-the absolute price dislocation is expressed in basis points:
+the absolute price dislocation is:
 
 ```text
 spread_bps =
@@ -657,7 +672,7 @@ buy_price  = lower pool price
 sell_price = higher pool price
 ```
 
-the raw directional edge is:
+the directional raw edge is:
 
 ```text
 gross edge =
@@ -669,19 +684,21 @@ The project then subtracts both Uniswap LP fees.
 For example:
 
 ```text
+0.01% pool = 1 bp
 0.05% pool = 5 bps
-0.30% pool = 30 bps
 ```
 
-So a 40 bps raw difference between those two pools would have an approximate fee-adjusted edge of:
+A 10-bps raw difference between those pools becomes approximately:
 
 ```text
-40 - 5 - 30 = 5 bps
+10 - 1 - 5 = 4 bps
 ```
 
 before accounting for any other costs.
 
-A positive fee-adjusted edge is treated only as a **candidate arbitrage signal**.
+A positive fee-adjusted value is treated only as a:
+
+> **candidate arbitrage signal**
 
 It is not equivalent to guaranteed profit.
 
@@ -691,17 +708,19 @@ A production arbitrage strategy would additionally need to model:
 - price impact,
 - slippage,
 - route size,
-- state changes,
 - transaction latency,
+- state changes,
+- transaction ordering,
 - competition,
-- reordering,
-- and failed-transaction risk.
+- and failed execution risk.
 
 ---
 
 # Swap-Size Analysis
 
-For matched cross-pool observations, the application groups swap size into:
+Each cross-pool observation is grouped by the swap that triggered the state update.
+
+Buckets:
 
 ```text
 <$1k
@@ -710,34 +729,38 @@ $10k-$100k
 $100k+
 ```
 
-For each bucket it calculates:
+For each bucket, the project calculates:
 
 - observation count,
 - mean spread,
 - median spread,
 - 95th-percentile spread.
 
-This tests whether larger trades are associated with larger temporary cross-pool dislocations.
+This allows the analysis to investigate whether larger trades are associated with greater temporary price dislocation.
 
 ---
 
 # Price-Dislocation Recovery
 
-The application identifies a dislocation when:
+The analysis defines a dislocation as:
 
 ```text
 spread >= 20 bps
 ```
 
-It then searches forward in time until the observed spread falls below:
+A strict recovery is defined as:
 
 ```text
-5 bps
+spread <= 5 bps
 ```
 
-within the configured maximum recovery window.
+within:
 
-For each event, it records:
+```text
+300 seconds
+```
+
+For each detected episode, the project records:
 
 ```text
 start_time
@@ -747,121 +770,61 @@ recovery_seconds
 fee_adjusted_edge_bps
 ```
 
-This allows the project to measure how rapidly independent pools return toward price consistency.
-
-Rapid recovery is **consistent with** competitive arbitrage activity.
-
-It does not prove that a specific transaction or wallet caused the convergence.
+This recovery analysis is intentionally conservative.
 
 ---
 
-# Generated Analysis
+# Data Validation
 
-The analysis pipeline produces four primary visualizations.
+The project includes:
 
-## 1. Pool Prices Over Time
-
-```text
-output/01_pool_prices.png
+```bash
+python -m scripts.validate_data
 ```
 
-Shows normalized WETH/USDC prices for different Uniswap v3 fee tiers over time.
+The final dataset passed the following checks:
 
-Purpose:
+```text
+True same-sign swap violations: 0
+Zero-amount / dust events: 1
+Duplicate event IDs: 0
+Missing timestamps: 0
+```
 
-- verify that the pools broadly follow the same market,
-- identify temporary divergence,
-- visually compare price synchronization.
+One event contained a zero-valued token side due to an extremely small dust-sized amount and was retained rather than treated as malformed data.
 
 ---
 
-## 2. Cross-Pool Spread Distribution
+# Tests
 
-```text
-output/02_spread_distribution.png
+Run:
+
+```bash
+pytest -v
 ```
 
-Shows the distribution of observed cross-pool spreads in basis points.
-
-Purpose:
-
-- measure normal market synchronization,
-- quantify tail dislocations,
-- identify unusually large discrepancies.
-
----
-
-## 3. Swap Size vs Price Dislocation
+The final test suite contains:
 
 ```text
-output/03_swap_size_vs_spread.png
+12 tests
 ```
 
-Compares matched swap size with cross-pool spread.
+covering:
 
-Swap size is plotted on a logarithmic scale because transaction sizes can be strongly skewed.
+- token amount conversion,
+- `sqrtPriceX96` conversion,
+- decimal adjustment,
+- execution-price calculation,
+- spread calculation,
+- gross edge calculation,
+- fee-adjusted edge calculation,
+- database schema creation,
+- minimum two-pool market-state behavior,
+- spread detection,
+- trigger-pool-only comparison,
+- stale-state filtering.
 
-Purpose:
-
-- investigate market impact,
-- test whether large trades correspond to larger temporary discrepancies.
-
----
-
-## 4. Recovery-Time Distribution
-
-```text
-output/04_recovery_times.png
-```
-
-Shows how long detected dislocations take to fall below the recovery threshold.
-
-Purpose:
-
-- measure market-efficiency response,
-- estimate how quickly cross-pool price inconsistencies disappear.
-
----
-
-# CSV and JSON Outputs
-
-The project also exports machine-readable results.
-
-```text
-output/pool_activity.csv
-```
-
-Contains swap counts and volume statistics by pool.
-
-```text
-output/processed_swaps.csv
-```
-
-Contains normalized human-readable swap data.
-
-```text
-output/cross_pool_matches.csv
-```
-
-Contains matched observations from different pools.
-
-```text
-output/swap_size_analysis.csv
-```
-
-Contains spread statistics grouped by swap-size bucket.
-
-```text
-output/recovery_events.csv
-```
-
-Contains identified dislocation and recovery events.
-
-```text
-output/summary.json
-```
-
-Contains high-level spread and recovery statistics used in the final findings.
+The final project passes all tests.
 
 ---
 
@@ -869,16 +832,14 @@ Contains high-level spread and recovery statistics used in the final findings.
 
 Python 3.11+ is recommended.
 
-## 1. Clone the Repository
+## 1. Clone the repository
 
 ```bash
 git clone <repository-url>
 cd lindenshore-blockchain-discovery
 ```
 
----
-
-## 2. Create a Virtual Environment
+## 2. Create a virtual environment
 
 Windows:
 
@@ -899,15 +860,11 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 
----
-
-## 3. Install Dependencies
+## 3. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
-
----
 
 ## 4. Configure RPC
 
@@ -923,48 +880,34 @@ with:
 BASE_RPC_URL=https://mainnet.base.org
 ```
 
-The project also includes `.env.example`.
+The repository also includes:
+
+```text
+.env.example
+```
 
 ---
 
 # Usage
 
-## Phase 1 — Test RPC Connection
-
-The RPC connection is automatically checked whenever the application starts.
-
-The expected network is:
-
-```text
-Base Mainnet
-Chain ID: 8453
-```
-
----
-
-## Phase 2 — Discover Pools
-
-Run:
+## Discover pools
 
 ```bash
 python -m scripts.discover_pools
 ```
 
-The program:
+This:
 
 1. connects to Base,
 2. loads the Uniswap v3 Factory,
-3. checks configured WETH/USDC fee tiers,
-4. discovers existing pools,
-5. reads pool token ordering,
-6. reads token metadata,
-7. stores the metadata in SQLite.
+3. discovers WETH/USDC pools,
+4. reads pool metadata,
+5. reads ERC-20 token metadata,
+6. stores metadata locally.
 
 ---
 
-## Phase 3 — Small Collection Smoke Test
-
-Before requesting a large dataset, collect approximately 0.02 days of data:
+## Collect a small smoke-test sample
 
 ```bash
 python -m scripts.collect_swaps --days 0.02 --chunk-size 200
@@ -972,277 +915,331 @@ python -m scripts.collect_swaps --days 0.02 --chunk-size 200
 
 `0.02` days is approximately 29 minutes.
 
-This validates:
-
-- historical block lookup,
-- `eth_getLogs`,
-- event decoding,
-- SQLite inserts,
-- checkpointing,
-- and multiple pool collection.
-
 ---
 
-## Phase 4 — Run Tests
-
-```bash
-pytest -v
-```
-
-The test suite validates:
-
-- raw token amount conversion,
-- `sqrtPriceX96` conversion,
-- decimal adjustment,
-- execution-price calculation,
-- spread calculation,
-- fee-adjusted edge calculation,
-- and database schema creation.
-
----
-
-## Phase 5 — Run Analysis
-
-```bash
-python -m scripts.run_analysis
-```
-
-The results are written into:
-
-```text
-output/
-```
-
----
-
-## Phase 6 — Expand Dataset
-
-After the smoke test succeeds, progressively increase the collection period.
-
-Six hours:
+## Collect a six-hour dataset
 
 ```bash
 python -m scripts.collect_swaps --days 0.25 --chunk-size 500
 ```
 
-One day:
+---
+
+## Collect a one-day dataset
 
 ```bash
 python -m scripts.collect_swaps --days 1 --chunk-size 500
 ```
 
-Three days:
+If the RPC rejects large requests:
 
 ```bash
-python -m scripts.collect_swaps --days 3 --chunk-size 500
-```
-
-Seven days:
-
-```bash
-python -m scripts.collect_swaps --days 7 --chunk-size 500
-```
-
-Because the collector uses checkpoints and unique event identifiers, rerunning collection does not intentionally duplicate already stored swaps.
-
----
-
-## Complete Pipeline
-
-The complete collection and analysis workflow can also be run through:
-
-```bash
-python main.py --days 1
-```
-
-For a larger final dataset:
-
-```bash
-python main.py --days 7
+python -m scripts.collect_swaps --days 1 --chunk-size 200
 ```
 
 ---
 
-# Manual SQLite Verification
+## Validate the database
 
-The database is located at:
-
-```text
-data/blockchain.db
-```
-
-Useful verification queries include:
-
-```sql
-SELECT COUNT(*)
-FROM swaps;
-```
-
-View example swaps:
-
-```sql
-SELECT *
-FROM swaps
-LIMIT 20;
-```
-
-Count swaps by fee tier:
-
-```sql
-SELECT
-    fee_tier,
-    COUNT(*) AS swap_count
-FROM swaps
-GROUP BY fee_tier
-ORDER BY fee_tier;
-```
-
-Inspect discovered pools:
-
-```sql
-SELECT *
-FROM pools
-ORDER BY fee;
-```
-
-Inspect token metadata:
-
-```sql
-SELECT *
-FROM tokens;
-```
-
-Inspect collector checkpoints:
-
-```sql
-SELECT *
-FROM collector_state
-ORDER BY pool_address;
+```bash
+python -m scripts.validate_data
 ```
 
 ---
 
-# Tests
-
-Run:
+## Run tests
 
 ```bash
 pytest -v
 ```
 
-A successful test run should report all tests as passed.
+---
+
+## Run analysis
+
+```bash
+python -m scripts.run_analysis
+```
+
+---
+
+## Run the complete pipeline
+
+```bash
+python main.py --days 0.25
+```
+
+---
+
+# Generated Outputs
+
+The analysis generates:
+
+```text
+output/
+├── 01_pool_prices.png
+├── 02_spread_distribution.png
+├── 03_swap_size_vs_spread.png
+├── 04_recovery_times.png
+├── pool_activity.csv
+├── processed_swaps.csv
+├── market_state.csv
+├── swap_size_analysis.csv
+├── recovery_events.csv
+├── arbitrage_candidates.csv
+└── summary.json
+```
+
+Large generated CSV files are excluded from Git, but the analysis can reproduce them from public blockchain data.
 
 ---
 
 # Findings
 
-> **Important:** this section should be updated only after the final multi-day dataset has been collected and analyzed. The project should not fabricate conclusions before observing the data.
+## Dataset Overview
 
-## Initial Collection Validation
+The final dataset contains **13,780 Uniswap v3 WETH/USDC Swap events** collected directly from Base through JSON-RPC over an approximately six-hour observation window.
 
-A short smoke-test collection successfully demonstrated that the full RPC-to-SQLite ingestion path works.
+After reconstructing pool state and applying a 60-second freshness limit to cross-pool comparisons, the analysis produced **27,215 market-state observations**.
 
-For an approximately 0.02-day collection window, the collector retrieved Swap events from several WETH/USDC Uniswap v3 pools.
+Trading activity varied substantially across fee tiers:
 
-Observed activity included:
+| Fee Tier | Swaps | Observed Volume |
+|---|---:|---:|
+| 0.01% | 6,901 | ~$1.08M |
+| 0.05% | 2,995 | ~$1.09M |
+| 0.30% | 3,879 | ~$1.86M |
+| 1.00% | 5 | ~$669 |
 
-- active 0.01% pool,
-- active 0.05% pool,
-- active 0.30% pool,
-- no observed swaps from the 1.00% pool during that short sample window.
+The **0.01% pool** processed the largest number of swaps, while the **0.30% pool** handled the greatest observed volume.
 
-This confirms that activity is not evenly distributed across fee tiers and that a pool can exist while remaining inactive during a particular observation period.
-
-These numbers are only a collection validation sample and are **not** treated as the final analytical dataset.
-
----
-
-## Final Pool Activity
-
-TODO after final collection:
-
-Report:
-
-- total swaps collected,
-- total swaps by fee tier,
-- estimated volume by fee tier,
-- median swap size,
-- dominant pool.
+The **1.00% pool** was effectively inactive during the sample.
 
 ---
 
-## Final Cross-Pool Price Efficiency
+## Cross-Pool Price Efficiency
 
-TODO after final analysis:
-
-Report:
-
-- median spread in bps,
-- mean spread,
-- 95th percentile,
-- 99th percentile,
-- maximum observed spread,
-- count of dislocations above the configured threshold.
-
----
-
-## Final Swap Size vs Dislocation Result
-
-TODO after final analysis:
-
-Determine whether larger matched swaps are associated with larger cross-pool spreads.
-
-The conclusion should be based on:
+Across **27,215 recent-state cross-pool observations**, the median WETH/USDC price difference was:
 
 ```text
-output/swap_size_analysis.csv
+4.33 bps
 ```
 
-and:
+The mean spread was:
 
 ```text
-output/03_swap_size_vs_spread.png
+7.54 bps
 ```
+
+The 95th percentile was:
+
+```text
+22.28 bps
+```
+
+The 99th percentile was:
+
+```text
+28.03 bps
+```
+
+The largest observed spread was:
+
+```text
+34.72 bps
+```
+
+A total of:
+
+```text
+1,969 observations
+```
+
+exceeded the project's 20-bps dislocation threshold.
+
+These results show that independent fee-tier pools regularly disagree on price, although most discrepancies remain relatively small.
 
 ---
 
-## Final Recovery Behavior
+## Effect of Trading Fees
 
-TODO after final analysis:
+The strongest finding is that an observable price difference is very different from an economically plausible arbitrage signal.
 
-Report:
-
-- number of detected dislocations,
-- number that recovered within the observation window,
-- median recovery time,
-- 90th-percentile recovery time.
-
-The conclusion should be based on:
+Only:
 
 ```text
-output/recovery_events.csv
+8 of 27,215 observations
 ```
 
-and:
+or approximately:
 
 ```text
-output/04_recovery_times.png
+0.029%
 ```
+
+remained positive after subtracting both Uniswap liquidity-provider fees.
+
+That is roughly:
+
+```text
+1 in 3,402
+```
+
+market-state observations.
+
+Therefore:
+
+> **Raw price spread alone substantially overstates apparent cross-pool arbitrage opportunities.**
+
+The strongest fee-adjusted candidate signal had an estimated remaining edge of approximately:
+
+```text
+5.68 bps
+```
+
+after both pool fees.
+
+This should not be interpreted as guaranteed profit because the analysis does not fully model:
+
+- gas,
+- price impact,
+- slippage,
+- latency,
+- state changes,
+- or execution competition.
 
 ---
 
-## Final Fee-Adjusted Arbitrage Signals
+## Swap Size and Price Dislocation
 
-TODO after final analysis:
+Trades below $10,000 showed similar median cross-pool spreads:
 
-Report:
+| Trigger Swap Size | Observations | Median Spread | P95 Spread |
+|---|---:|---:|---:|
+| <$1k | 26,325 | 4.32 bps | 21.60 bps |
+| $1k-$10k | 832 | 3.99 bps | 25.50 bps |
+| $10k-$100k | 50 | 25.28 bps | 29.40 bps |
+| $100k+ | 8 | 23.98 bps | 27.75 bps |
 
-- raw cross-pool matches,
-- number with positive gross spread,
-- number remaining positive after both pool fees,
-- distribution of fee-adjusted edge.
+The data does **not** show a smooth monotonic relationship across all trade sizes.
 
-A positive fee-adjusted signal must **not** be described as guaranteed profit.
+However, the sample shows a clear threshold-like difference:
+
+```text
+under $10k
+→ median spread ≈ 4 bps
+
+$10k+
+→ median spread ≈ 24-25 bps
+```
+
+This suggests that sufficiently large swaps can create materially larger temporary price dislocations.
+
+The largest trade-size buckets contain fewer observations, so this result should be interpreted cautiously rather than as a universal causal relationship.
+
+---
+
+## Recovery Behavior
+
+Using a strict definition:
+
+```text
+dislocation:
+spread >= 20 bps
+
+recovery:
+spread <= 5 bps
+
+maximum window:
+300 seconds
+```
+
+the analysis detected:
+
+```text
+49 dislocation episodes
+```
+
+Only:
+
+```text
+5 episodes
+```
+
+recovered under this strict definition.
+
+Among those recovered episodes:
+
+```text
+median recovery time = 124 seconds
+p90 recovery time    = 150 seconds
+```
+
+It would therefore be misleading to say that dislocations usually recover in 124 seconds.
+
+The correct interpretation is:
+
+> Among the small subset of episodes that returned below the strict 5-bps threshold within five minutes, the median recovery time was 124 seconds.
+
+The relatively low recovery count suggests that a 5-bps threshold is tighter than the persistent differences observed between some fee-tier pools.
+
+---
+
+## Candidate Arbitrage Signals
+
+The analysis identified:
+
+```text
+8
+```
+
+market-state observations with a positive edge after accounting for both Uniswap LP fees.
+
+The strongest observed candidate occurred around block:
+
+```text
+50131428
+```
+
+with approximately:
+
+```text
+buy price:  $1,900.3126
+sell price: $1,902.5322
+fee-adjusted edge: 5.68 bps
+trigger swap size: ~$4,272
+```
+
+This is classified only as a:
+
+> **fee-adjusted candidate arbitrage signal**
+
+not a guaranteed profitable arbitrage opportunity.
+
+A complete profitability model would additionally require route simulation, gas estimation, slippage, available liquidity, and execution-risk modeling.
+
+---
+
+## Final Interpretation
+
+The central result of this project is:
+
+> **Visible DEX price disagreement is far more common than fee-adjusted arbitrage opportunity.**
+
+Different Uniswap v3 fee tiers can maintain measurable price differences, particularly around larger trades, but the liquidity-provider fees required to trade across two pools consume almost all observed raw spreads.
+
+This demonstrates why practical arbitrage detection requires more than comparing two quoted prices.
+
+The following factors materially affect whether a price difference is economically interesting:
+
+- pool fee tiers,
+- trade size,
+- state freshness,
+- liquidity,
+- price impact,
+- gas,
+- slippage,
+- and execution competition.
 
 ---
 
@@ -1250,194 +1247,24 @@ A positive fee-adjusted signal must **not** be described as guaranteed profit.
 
 ## 1. Arbitrage Detection
 
-Cross-pool discrepancies can provide an initial signal for possible arbitrage.
+Cross-pool price discrepancies can be used as an initial arbitrage signal.
 
 A production implementation could extend this project by:
 
-- simulating exact trade routes,
-- estimating price impact,
+- simulating exact swap routes,
+- calculating executable trade size,
 - estimating gas,
-- evaluating available liquidity,
-- and calculating executable net profit.
+- modeling price impact,
+- modeling slippage,
+- and calculating expected net profit.
 
 ---
 
 ## 2. MEV Research
 
-Transaction timing and ordering around large dislocations can be used to investigate potential arbitrage and MEV behavior.
+Transaction ordering around large dislocations can be used to investigate possible arbitrage and MEV behavior.
 
-A future extension could identify addresses repeatedly interacting with affected pools immediately after large price movements.
-
-Such addresses should be treated as **candidate arbitrage actors** unless their behavior can be more conclusively classified.
-
----
-
-## 3. Execution Analysis
-
-Large traders can use market-impact analysis to evaluate whether:
-
-- one pool should be avoided,
-- an order should be split across pools,
-- or execution should be routed through the deepest available liquidity.
-
----
-
-## 4. Liquidity Risk
-
-Large or persistent price dislocations may indicate:
-
-- insufficient liquidity,
-- fragmented liquidity,
-- unusual market stress,
-- or poor execution quality.
-
-This can be useful for DEX market-quality monitoring.
-
----
-
-## 5. Market-Efficiency Measurement
-
-Cross-pool spread and recovery time can act as observable measures of decentralized market efficiency.
-
-A highly efficient market should generally show:
-
-- small cross-pool spreads,
-- few economically meaningful dislocations,
-- and rapid recovery after large price movements.
-
----
-
-# Limitations
-
-## Public RPC Limits
-
-The default Base public RPC endpoint may:
-
-- rate-limit requests,
-- reject very large log ranges,
-- or temporarily time out.
-
-The collector therefore uses:
-
-- configurable block chunking,
-- retry logic,
-- exponential backoff,
-- and persistent checkpoints.
-
-A user can substitute another public or free-tier Base RPC endpoint through `.env` without changing source code.
-
----
-
-## Observed State vs Executable State
-
-Cross-pool matching uses nearby Swap observations.
-
-Two matched observations should not automatically be interpreted as two prices that were guaranteed to be simultaneously executable.
-
-Exact executable arbitrage analysis would require state reconstruction or block-level simulation.
-
----
-
-## Timestamp Resolution
-
-Blockchain timestamps alone do not provide exact intra-block ordering.
-
-Where ordering matters, the raw dataset also stores:
-
-```text
-block_number
-transaction_index
-log_index
-```
-
-These can be used for more detailed same-block analysis.
-
----
-
-## Pool Fees Are Not Total Trading Costs
-
-The fee-adjusted analysis currently includes Uniswap LP fees but does not fully account for:
-
-- gas,
-- slippage,
-- price impact,
-- latency,
-- state changes,
-- competition,
-- transaction ordering,
-- or failed transactions.
-
-Therefore:
-
-> **fee-adjusted edge != guaranteed arbitrage profit**
-
----
-
-## MEV Attribution
-
-Rapid convergence after a large price discrepancy is consistent with arbitrage.
-
-It does not prove that:
-
-- a particular address is a bot,
-- a particular transaction is MEV,
-- or a particular participant intentionally performed arbitrage.
-
-More detailed transaction tracing would be required for attribution.
-
----
-
-## Dataset Scope
-
-The project currently focuses on:
-
-```text
-Base
-Uniswap v3
-WETH/USDC
-```
-
-It does not capture every WETH/USDC venue on Base.
-
-A more complete market analysis could compare:
-
-- other DEX protocols,
-- Uniswap v2/v4,
-- Aerodrome,
-- centralized exchanges,
-- or another blockchain.
-
----
-
-# Reproducibility
-
-A new user should be able to reproduce the project with:
-
-```bash
-python -m venv .venv
-```
-
-Activate the environment and run:
-
-```bash
-pip install -r requirements.txt
-python -m scripts.discover_pools
-python -m scripts.collect_swaps --days 1 --chunk-size 500
-pytest -v
-python -m scripts.run_analysis
-```
-
-The generated SQLite database and analysis files can be recreated from public blockchain data.
-
----
-
-# Future Work
-
-Potential high-value extensions include:
-
-## Same-Block Arbitrage Detection
-
-Analyze:
+A future extension could analyze:
 
 ```text
 block_number
@@ -1447,85 +1274,262 @@ sender
 recipient
 ```
 
-around large dislocations.
+to identify addresses that repeatedly trade shortly after large pool-price movements.
 
-This could reveal recurring addresses that consistently trade immediately after one pool is moved.
+Such addresses should only be described as:
+
+> candidate arbitrage actors
+
+unless more detailed transaction tracing supports stronger attribution.
 
 ---
+
+## 3. Execution Analysis
+
+The relationship between trade size and resulting dislocation can be useful for evaluating execution quality.
+
+A large trader could use this information to decide whether:
+
+- a single pool should be avoided,
+- an order should be split,
+- or liquidity should be routed across multiple venues.
+
+---
+
+## 4. Liquidity Risk
+
+Persistent or unusually large price dislocations may indicate:
+
+- shallow liquidity,
+- fragmented liquidity,
+- market stress,
+- or poor execution quality.
+
+This can support DEX market-quality monitoring.
+
+---
+
+## 5. Market-Efficiency Measurement
+
+Cross-pool spread and recovery behavior provide observable measures of decentralized-market efficiency.
+
+A highly efficient market should generally show:
+
+- small ordinary spreads,
+- relatively few economically meaningful discrepancies,
+- and rapid convergence after large price movements.
+
+---
+
+# Limitations
+
+## Public RPC Limits
+
+The default Base public RPC endpoint can:
+
+- rate-limit requests,
+- reject very large historical log queries,
+- or temporarily time out.
+
+The collector therefore uses:
+
+- block chunking,
+- retry logic,
+- exponential backoff,
+- and persistent checkpoints.
+
+A different Base RPC endpoint can be configured through `.env` without changing application code.
+
+---
+
+## Observed State vs Exact Executable State
+
+The project reconstructs recent observed pool states from Swap events.
+
+This is more informative than simple nearest-timestamp matching, but it is not identical to full historical state simulation.
+
+Two compared prices should therefore not automatically be interpreted as guaranteed simultaneously executable quotes.
+
+---
+
+## State Freshness
+
+Low-activity pools may retain stale observed prices.
+
+To reduce this problem, the analysis excludes comparisons when the other pool's latest observed state is more than **60 seconds old**.
+
+This is still an approximation.
+
+---
+
+## Pool Fees Are Not Total Trading Cost
+
+The fee-adjusted signal includes both Uniswap LP fees but does not fully account for:
+
+- gas,
+- price impact,
+- slippage,
+- transaction latency,
+- transaction ordering,
+- competition,
+- or failed execution.
+
+Therefore:
+
+> **fee-adjusted edge != guaranteed arbitrage profit**
+
+---
+
+## MEV Attribution
+
+Rapid price convergence or repeated transaction timing can be consistent with arbitrage behavior.
+
+It does not prove that:
+
+- a specific address is a bot,
+- a specific transaction is MEV,
+- or a participant intentionally performed arbitrage.
+
+More detailed tracing would be required for attribution.
+
+---
+
+## Dataset Scope
+
+The project focuses on:
+
+```text
+Base
+Uniswap v3
+WETH/USDC
+```
+
+It does not represent every WETH/USDC venue on Base.
+
+A broader study could include:
+
+- other DEX protocols,
+- Uniswap v2/v4,
+- Aerodrome,
+- centralized exchanges,
+- or other blockchains.
+
+---
+
+## Observation Window
+
+The final analytical dataset covers approximately six hours.
+
+This is sufficient for the discovery objective and produces tens of thousands of state comparisons, but the findings should not automatically be generalized to all market regimes or all periods.
+
+---
+
+# Reproducibility
+
+A new user can reproduce the project with:
+
+```bash
+python -m venv .venv
+```
+
+Activate the environment, then:
+
+```bash
+pip install -r requirements.txt
+python -m scripts.discover_pools
+python -m scripts.collect_swaps --days 0.25 --chunk-size 500
+python -m scripts.validate_data
+pytest -v
+python -m scripts.run_analysis
+```
+
+The SQLite database and generated analysis files can be rebuilt entirely from public blockchain data.
+
+---
+
+# Future Work
+
+Potential extensions include:
+
+## Same-Block Arbitrage Detection
+
+Analyze transaction and log ordering around detected price dislocations.
 
 ## Candidate Arbitrage-Actor Ranking
 
-Rank addresses using metrics such as:
+Rank addresses by:
 
 - number of dislocation-adjacent transactions,
-- median reaction delay,
+- reaction delay,
 - pools interacted with,
-- estimated raw edge,
+- estimated fee-adjusted edge,
 - recurrence across blocks.
 
----
+## Gas-Cost Modeling
 
-## Exact Gas Modeling
-
-Retrieve transaction receipts and Base gas costs to estimate:
+Retrieve transaction receipts and estimate:
 
 ```text
 estimated profit =
 trade notional × fee-adjusted edge
-- gas cost
+- gas
 - price impact
 ```
 
----
-
 ## Liquidity-Depth Modeling
 
-Use Uniswap v3 concentrated-liquidity state to estimate how much capital could realistically be traded before the apparent arbitrage disappears.
+Use Uniswap v3 concentrated-liquidity state to estimate how much capital could realistically be traded before an apparent edge disappears.
 
----
+## Cross-DEX Comparison
+
+Compare WETH/USDC pricing on Uniswap v3 with other Base DEX venues.
 
 ## Cross-Chain Comparison
 
 Repeat the same methodology on Ethereum and compare:
 
-- swap volume,
 - spread magnitude,
-- recovery time,
-- fee-adjusted opportunities,
-- and arbitrage efficiency.
-
-This would directly test whether market efficiency differs between Ethereum and Base.
+- swap size,
+- fee-adjusted opportunity frequency,
+- recovery behavior,
+- and market efficiency.
 
 ---
 
 # Conclusion
 
-This project demonstrates how raw blockchain RPC data can be transformed into an interpretable market-microstructure dataset.
+This project demonstrates how raw blockchain RPC data can be transformed into a meaningful market-microstructure dataset.
 
-The pipeline covers the complete process:
+The complete pipeline covers:
 
 ```text
 RPC connectivity
         ↓
 protocol discovery
         ↓
-on-chain event collection
+on-chain Swap collection
         ↓
 event decoding
         ↓
-local persistence
+local SQLite storage
         ↓
 price normalization
         ↓
-cross-pool comparison
+ordered market-state reconstruction
         ↓
-arbitrage-signal analysis
+freshness filtering
         ↓
-market-efficiency insights
+cross-pool spread analysis
+        ↓
+fee-adjusted arbitrage filtering
+        ↓
+market-structure insights
 ```
 
-The central goal is not merely to download blockchain transactions, but to use immutable on-chain data to answer a practical financial question:
+The key finding is that:
 
-> **When independent decentralized liquidity pools temporarily disagree on price, how large are those differences, how quickly do they disappear, and how often do they remain economically interesting after fees?**
+> **raw cross-pool price differences are common, but economically interesting fee-adjusted signals are extremely rare.**
 
-The final conclusions in this repository are based only on collected on-chain observations and are updated after the full analysis dataset has been generated.
+Across **27,215 recent-state observations**, only **8 (0.029%)** remained positive after accounting for both Uniswap LP fees.
+
+The project therefore shows why useful blockchain arbitrage analysis requires more than detecting a difference between two prices: fee structure, state freshness, trade size, and execution costs all matter.

@@ -1,0 +1,15 @@
+{
+  "observations": 27215,
+  "mean_spread_bps": 7.542891940309713,
+  "median_spread_bps": 4.325589137415202,
+  "p95_spread_bps": 22.279908791594654,
+  "p99_spread_bps": 28.031997822905993,
+  "maximum_spread_bps": 34.715960360242896,
+  "dislocations_above_threshold": 1969,
+  "positive_fee_adjusted_edges": 8,
+  "positive_fee_adjusted_percentage": 0.029395553922469227,
+  "dislocation_episodes": 49,
+  "recovered_event_count": 5,
+  "median_recovery_seconds": 124.0,
+  "p90_recovery_seconds": 150.0
+}

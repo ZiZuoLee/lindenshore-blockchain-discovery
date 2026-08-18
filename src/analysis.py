@@ -1,5 +1,4 @@
 import json
-from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -7,14 +6,12 @@ import pandas as pd
 
 from src.config import (
     DISLOCATION_THRESHOLD_BPS,
-    MAX_PRICE_MATCH_SECONDS,
     MAX_RECOVERY_SECONDS,
+    MAX_STATE_AGE_SECONDS,
     OUTPUT_DIR,
     RECOVERY_THRESHOLD_BPS,
 )
-from src.database import (
-    load_swaps_dataframe,
-)
+from src.database import load_swaps_dataframe
 from src.pricing import (
     fee_adjusted_edge_bps,
     normalize_swap_dataframe,
@@ -28,239 +25,17 @@ def prepare_output_directory() -> None:
     )
 
 
-def build_cross_pool_matches(
-    swaps: pd.DataFrame,
-    max_match_seconds: int
-    = MAX_PRICE_MATCH_SECONDS,
-) -> pd.DataFrame:
-    """
-    Match each swap with the temporally nearest swap
-    from another fee-tier pool.
-
-    This produces observations of cross-pool prices
-    close in time.
-    """
-    if swaps.empty:
-        return pd.DataFrame()
-
-    pools = sorted(
-        swaps["pool_address"].unique()
-    )
-
-    if len(pools) < 2:
-        return pd.DataFrame()
-
-    matches = []
-
-    for i in range(len(pools)):
-
-        for j in range(i + 1, len(pools)):
-
-            pool_a = pools[i]
-            pool_b = pools[j]
-
-            a = (
-                swaps[
-                    swaps["pool_address"]
-                    == pool_a
-                ]
-                .sort_values("timestamp")
-                .copy()
-            )
-
-            b = (
-                swaps[
-                    swaps["pool_address"]
-                    == pool_b
-                ]
-                .sort_values("timestamp")
-                .copy()
-            )
-
-            if a.empty or b.empty:
-                continue
-
-            a = a.rename(
-                columns={
-                    "pool_price":
-                        "price_a",
-                    "fee_tier":
-                        "fee_a",
-                    "swap_usd":
-                        "swap_usd_a",
-                    "transaction_hash":
-                        "tx_hash_a",
-                    "block_number":
-                        "block_a",
-                }
-            )
-
-            b = b.rename(
-                columns={
-                    "pool_price":
-                        "price_b",
-                    "fee_tier":
-                        "fee_b",
-                    "swap_usd":
-                        "swap_usd_b",
-                    "transaction_hash":
-                        "tx_hash_b",
-                    "block_number":
-                        "block_b",
-                }
-            )
-
-            matched = pd.merge_asof(
-                a[
-                    [
-                        "timestamp",
-                        "price_a",
-                        "fee_a",
-                        "swap_usd_a",
-                        "tx_hash_a",
-                        "block_a",
-                    ]
-                ],
-                b[
-                    [
-                        "timestamp",
-                        "price_b",
-                        "fee_b",
-                        "swap_usd_b",
-                        "tx_hash_b",
-                        "block_b",
-                    ]
-                ],
-                on="timestamp",
-                direction="nearest",
-                tolerance=pd.Timedelta(
-                    seconds=max_match_seconds
-                ),
-            )
-
-            matched = matched.dropna(
-                subset=["price_b"]
-            )
-
-            if matched.empty:
-                continue
-
-            matched["pool_a"] = pool_a
-            matched["pool_b"] = pool_b
-
-            matched["spread_bps"] = (
-                np.abs(
-                    matched["price_a"]
-                    - matched["price_b"]
-                )
-                / np.minimum(
-                    matched["price_a"],
-                    matched["price_b"],
-                )
-                * 10_000
-            )
-
-            matched[
-                "larger_swap_usd"
-            ] = np.maximum(
-                matched["swap_usd_a"],
-                matched["swap_usd_b"],
-            )
-
-            net_edges = []
-            routes = []
-
-            for _, row in matched.iterrows():
-
-                if (
-                    row["price_a"]
-                    < row["price_b"]
-                ):
-                    buy_price = row["price_a"]
-                    sell_price = row["price_b"]
-
-                    buy_fee = int(
-                        row["fee_a"]
-                    )
-
-                    sell_fee = int(
-                        row["fee_b"]
-                    )
-
-                    route = (
-                        f"{pool_a} -> {pool_b}"
-                    )
-
-                else:
-                    buy_price = row["price_b"]
-                    sell_price = row["price_a"]
-
-                    buy_fee = int(
-                        row["fee_b"]
-                    )
-
-                    sell_fee = int(
-                        row["fee_a"]
-                    )
-
-                    route = (
-                        f"{pool_b} -> {pool_a}"
-                    )
-
-                net_edge = (
-                    fee_adjusted_edge_bps(
-                        buy_price,
-                        sell_price,
-                        buy_fee,
-                        sell_fee,
-                    )
-                )
-
-                net_edges.append(
-                    net_edge
-                )
-
-                routes.append(
-                    route
-                )
-
-            matched[
-                "fee_adjusted_edge_bps"
-            ] = net_edges
-
-            matched[
-                "candidate_route"
-            ] = routes
-
-            matches.append(
-                matched
-            )
-
-    if not matches:
-        return pd.DataFrame()
-
-    result = pd.concat(
-        matches,
-        ignore_index=True,
-    )
-
-    result = (
-        result
-        .sort_values("timestamp")
-        .reset_index(drop=True)
-    )
-
-    return result
-
-
 def calculate_pool_activity(
     swaps: pd.DataFrame,
 ) -> pd.DataFrame:
-
+    """
+    Calculate basic trading statistics for each
+    Uniswap v3 fee-tier pool.
+    """
     if swaps.empty:
         return pd.DataFrame()
 
-    activity = (
+    return (
         swaps.groupby(
             [
                 "pool_address",
@@ -284,77 +59,429 @@ def calculate_pool_activity(
                 "swap_usd",
                 "mean",
             ),
+            p95_swap_usd=(
+                "swap_usd",
+                lambda x: x.quantile(0.95),
+            ),
             max_swap_usd=(
                 "swap_usd",
                 "max",
             ),
         )
         .reset_index()
+        .sort_values("fee_tier")
     )
 
-    return activity
 
+def build_market_state(
+    swaps: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Reconstruct cross-pool market state after each Swap event.
+
+    Events are processed in deterministic blockchain order:
+
+        block_number
+        transaction_index
+        log_index
+
+    After a pool changes, we compare ONLY the changed pool
+    against every other pool whose latest state is already known.
+
+    This avoids:
+    - duplicating unchanged pool-pair observations
+    - incorrectly associating an unrelated trigger swap with a pair
+      that did not change
+    """
+
+    if swaps.empty:
+        return pd.DataFrame()
+
+    ordered = (
+        swaps.sort_values(
+            [
+                "block_number",
+                "transaction_index",
+                "log_index",
+            ]
+        )
+        .reset_index(drop=True)
+    )
+
+    latest_state = {}
+
+    observations = []
+
+    for _, row in ordered.iterrows():
+
+        trigger_pool = row["pool_address"]
+
+        latest_state[trigger_pool] = {
+            "price": float(
+                row["pool_price"]
+            ),
+            "fee_tier": int(
+                row["fee_tier"]
+            ),
+            "block_number": int(
+                row["block_number"]
+            ),
+            "transaction_index": int(
+                row["transaction_index"]
+            ),
+            "log_index": int(
+                row["log_index"]
+            ),
+            "timestamp": row[
+                "timestamp"
+            ],
+            "tx_hash": row[
+                "transaction_hash"
+            ],
+            "swap_usd": float(
+                row["swap_usd"]
+            ),
+        }
+
+        if len(latest_state) < 2:
+            continue
+
+        trigger_state = latest_state[
+            trigger_pool
+        ]
+
+        for other_pool, other_state in (
+            latest_state.items()
+        ):
+
+            if other_pool == trigger_pool:
+                continue
+
+            state_age_seconds = (
+                row["timestamp"]
+                - other_state["timestamp"]
+            ).total_seconds()
+
+            if (
+                state_age_seconds < 0
+                or
+                state_age_seconds
+                > MAX_STATE_AGE_SECONDS
+            ):
+                continue
+
+            price_trigger = (
+                trigger_state["price"]
+            )
+
+            price_other = (
+                other_state["price"]
+            )
+
+            if (
+                not np.isfinite(
+                    price_trigger
+                )
+                or not np.isfinite(
+                    price_other
+                )
+                or price_trigger <= 0
+                or price_other <= 0
+            ):
+                continue
+
+            # Canonical ordering avoids storing
+            # A/B and B/A as different pair identities.
+            if trigger_pool < other_pool:
+
+                pool_a = trigger_pool
+                pool_b = other_pool
+
+                price_a = price_trigger
+                price_b = price_other
+
+                fee_a = (
+                    trigger_state[
+                        "fee_tier"
+                    ]
+                )
+
+                fee_b = (
+                    other_state[
+                        "fee_tier"
+                    ]
+                )
+
+            else:
+
+                pool_a = other_pool
+                pool_b = trigger_pool
+
+                price_a = price_other
+                price_b = price_trigger
+
+                fee_a = (
+                    other_state[
+                        "fee_tier"
+                    ]
+                )
+
+                fee_b = (
+                    trigger_state[
+                        "fee_tier"
+                    ]
+                )
+
+            spread = (
+                abs(
+                    price_a
+                    - price_b
+                )
+                / min(
+                    price_a,
+                    price_b,
+                )
+                * 10_000
+            )
+
+            if price_a < price_b:
+
+                buy_pool = pool_a
+                sell_pool = pool_b
+
+                buy_price = price_a
+                sell_price = price_b
+
+                buy_fee = fee_a
+                sell_fee = fee_b
+
+            else:
+
+                buy_pool = pool_b
+                sell_pool = pool_a
+
+                buy_price = price_b
+                sell_price = price_a
+
+                buy_fee = fee_b
+                sell_fee = fee_a
+
+            net_edge = (
+                fee_adjusted_edge_bps(
+                    buy_price=
+                        buy_price,
+                    sell_price=
+                        sell_price,
+                    buy_fee_tier=
+                        buy_fee,
+                    sell_fee_tier=
+                        sell_fee,
+                )
+            )
+
+            observations.append(
+                {
+                    "timestamp":
+                        row[
+                            "timestamp"
+                        ],
+
+                    "block_number":
+                        int(
+                            row[
+                                "block_number"
+                            ]
+                        ),
+
+                    "transaction_index":
+                        int(
+                            row[
+                                "transaction_index"
+                            ]
+                        ),
+
+                    "log_index":
+                        int(
+                            row[
+                                "log_index"
+                            ]
+                        ),
+                    "other_state_age_seconds":
+                        float(
+                            state_age_seconds
+                        ),
+
+                    "trigger_pool":
+                        trigger_pool,
+
+                    "trigger_fee_tier":
+                        int(
+                            row[
+                                "fee_tier"
+                            ]
+                        ),
+
+                    "trigger_tx_hash":
+                        row[
+                            "transaction_hash"
+                        ],
+
+                    "trigger_swap_usd":
+                        float(
+                            row[
+                                "swap_usd"
+                            ]
+                        ),
+
+                    "pool_a":
+                        pool_a,
+
+                    "pool_b":
+                        pool_b,
+
+                    "price_a":
+                        price_a,
+
+                    "price_b":
+                        price_b,
+
+                    "fee_a":
+                        fee_a,
+
+                    "fee_b":
+                        fee_b,
+
+                    "spread_bps":
+                        spread,
+
+                    "buy_pool":
+                        buy_pool,
+
+                    "sell_pool":
+                        sell_pool,
+
+                    "buy_price":
+                        buy_price,
+
+                    "sell_price":
+                        sell_price,
+
+                    "fee_adjusted_edge_bps":
+                        net_edge,
+                }
+            )
+
+    if not observations:
+        return pd.DataFrame()
+
+    return (
+        pd.DataFrame(
+            observations
+        )
+        .sort_values(
+            [
+                "block_number",
+                "transaction_index",
+                "log_index",
+            ]
+        )
+        .reset_index(drop=True)
+    )
 
 def calculate_spread_summary(
-    matches: pd.DataFrame,
+    market_state: pd.DataFrame,
 ) -> dict:
+    """
+    Summarize cross-pool price dislocations.
+    """
 
-    if matches.empty:
+    if market_state.empty:
         return {}
 
     spread = (
-        matches["spread_bps"]
+        market_state[
+            "spread_bps"
+        ]
+        .dropna()
+    )
+
+    net_edges = (
+        market_state[
+            "fee_adjusted_edge_bps"
+        ]
         .dropna()
     )
 
     return {
         "observations":
-            int(len(spread)),
+            int(
+                len(spread)
+            ),
 
         "mean_spread_bps":
-            float(spread.mean()),
+            float(
+                spread.mean()
+            ),
 
         "median_spread_bps":
-            float(spread.median()),
+            float(
+                spread.median()
+            ),
 
         "p95_spread_bps":
             float(
-                spread.quantile(0.95)
+                spread.quantile(
+                    0.95
+                )
             ),
 
         "p99_spread_bps":
             float(
-                spread.quantile(0.99)
+                spread.quantile(
+                    0.99
+                )
             ),
 
         "maximum_spread_bps":
-            float(spread.max()),
+            float(
+                spread.max()
+            ),
 
         "dislocations_above_threshold":
             int(
                 (
                     spread
-                    >= DISLOCATION_THRESHOLD_BPS
+                    >=
+                    DISLOCATION_THRESHOLD_BPS
                 ).sum()
             ),
 
         "positive_fee_adjusted_edges":
             int(
                 (
-                    matches[
-                        "fee_adjusted_edge_bps"
-                    ]
+                    net_edges
                     > 0
                 ).sum()
+            ),
+
+        "positive_fee_adjusted_percentage":
+            float(
+                (
+                    net_edges
+                    > 0
+                ).mean()
+                * 100
             ),
     }
 
 
 def add_swap_size_buckets(
-    matches: pd.DataFrame,
+    market_state: pd.DataFrame,
 ) -> pd.DataFrame:
 
-    result = matches.copy()
+    result = (
+        market_state.copy()
+    )
 
     bins = [
         0,
@@ -371,30 +498,34 @@ def add_swap_size_buckets(
         "$100k+",
     ]
 
-    result["swap_size_bucket"] = (
-        pd.cut(
-            result["larger_swap_usd"],
-            bins=bins,
-            labels=labels,
-            right=False,
-        )
+    result[
+        "swap_size_bucket"
+    ] = pd.cut(
+        result[
+            "trigger_swap_usd"
+        ],
+        bins=bins,
+        labels=labels,
+        right=False,
     )
 
     return result
 
 
 def swap_size_analysis(
-    matches: pd.DataFrame,
+    market_state: pd.DataFrame,
 ) -> pd.DataFrame:
 
-    if matches.empty:
+    if market_state.empty:
         return pd.DataFrame()
 
-    temp = add_swap_size_buckets(
-        matches
+    temp = (
+        add_swap_size_buckets(
+            market_state
+        )
     )
 
-    result = (
+    return (
         temp.groupby(
             "swap_size_bucket",
             observed=False,
@@ -404,159 +535,302 @@ def swap_size_analysis(
                 "spread_bps",
                 "count",
             ),
+
             median_spread_bps=(
                 "spread_bps",
                 "median",
             ),
+
             mean_spread_bps=(
                 "spread_bps",
                 "mean",
             ),
+
             p95_spread_bps=(
                 "spread_bps",
                 lambda x:
-                    x.quantile(0.95),
+                    x.quantile(
+                        0.95
+                    ),
             ),
         )
         .reset_index()
     )
 
-    return result
 
-
-def detect_recovery_events(
-    matches: pd.DataFrame,
-    dislocation_threshold:
-        float = DISLOCATION_THRESHOLD_BPS,
-    recovery_threshold:
-        float = RECOVERY_THRESHOLD_BPS,
-    max_recovery_seconds:
-        int = MAX_RECOVERY_SECONDS,
+def detect_dislocation_events(
+    market_state: pd.DataFrame,
 ) -> pd.DataFrame:
     """
-    Find how long a detected price dislocation takes
-    to return below recovery_threshold.
+    Detect the beginning of cross-pool dislocations.
 
-    This is an observational metric rather than proof
-    that a specific arbitrageur caused convergence.
+    Consecutive observations involving the same pair
+    above the threshold are treated as one episode.
     """
-    if matches.empty:
+
+    if market_state.empty:
         return pd.DataFrame()
 
-    matches = (
-        matches
-        .sort_values("timestamp")
+    ordered = (
+        market_state
+        .sort_values(
+            [
+                "block_number",
+                "transaction_index",
+                "log_index",
+            ]
+        )
         .reset_index(drop=True)
     )
 
+    active_pairs = {}
+
     events = []
 
-    previous_was_dislocated = False
+    for _, row in ordered.iterrows():
 
-    for i, row in matches.iterrows():
+        pair = tuple(
+            sorted(
+                [
+                    row["pool_a"],
+                    row["pool_b"],
+                ]
+            )
+        )
 
-        currently_dislocated = (
+        dislocated = (
             row["spread_bps"]
-            >= dislocation_threshold
+            >=
+            DISLOCATION_THRESHOLD_BPS
+        )
+
+        was_dislocated = (
+            active_pairs.get(
+                pair,
+                False,
+            )
         )
 
         if (
-            currently_dislocated
-            and not previous_was_dislocated
+            dislocated
+            and not
+            was_dislocated
         ):
-            start_time = row["timestamp"]
 
-            recovered = False
+            events.append(
+                {
+                    "timestamp":
+                        row[
+                            "timestamp"
+                        ],
 
-            for j in range(
-                i + 1,
-                len(matches),
-            ):
+                    "block_number":
+                        row[
+                            "block_number"
+                        ],
 
-                next_row = (
-                    matches.iloc[j]
-                )
+                    "transaction_index":
+                        row[
+                            "transaction_index"
+                        ],
 
-                elapsed = (
-                    next_row["timestamp"]
-                    - start_time
-                ).total_seconds()
+                    "log_index":
+                        row[
+                            "log_index"
+                        ],
 
-                if (
-                    elapsed
-                    > max_recovery_seconds
-                ):
-                    break
+                    "pool_a":
+                        row[
+                            "pool_a"
+                        ],
 
-                if (
-                    next_row["spread_bps"]
-                    <= recovery_threshold
-                ):
-                    events.append(
-                        {
-                            "start_time":
-                                start_time,
+                    "pool_b":
+                        row[
+                            "pool_b"
+                        ],
 
-                            "initial_spread_bps":
-                                float(
-                                    row[
-                                        "spread_bps"
-                                    ]
-                                ),
+                    "trigger_pool":
+                        row[
+                            "trigger_pool"
+                        ],
 
-                            "recovery_time":
-                                next_row[
-                                    "timestamp"
-                                ],
+                    "trigger_tx_hash":
+                        row[
+                            "trigger_tx_hash"
+                        ],
 
-                            "recovery_seconds":
-                                float(elapsed),
+                    "trigger_swap_usd":
+                        row[
+                            "trigger_swap_usd"
+                        ],
 
-                            "fee_adjusted_edge_bps":
-                                float(
-                                    row[
-                                        "fee_adjusted_edge_bps"
-                                    ]
-                                ),
-                        }
-                    )
+                    "initial_spread_bps":
+                        row[
+                            "spread_bps"
+                        ],
 
-                    recovered = True
-                    break
+                    "fee_adjusted_edge_bps":
+                        row[
+                            "fee_adjusted_edge_bps"
+                        ],
+                }
+            )
 
-            if not recovered:
-                events.append(
-                    {
-                        "start_time":
-                            start_time,
-
-                        "initial_spread_bps":
-                            float(
-                                row[
-                                    "spread_bps"
-                                ]
-                            ),
-
-                        "recovery_time":
-                            pd.NaT,
-
-                        "recovery_seconds":
-                            np.nan,
-
-                        "fee_adjusted_edge_bps":
-                            float(
-                                row[
-                                    "fee_adjusted_edge_bps"
-                                ]
-                            ),
-                    }
-                )
-
-        previous_was_dislocated = (
-            currently_dislocated
+        active_pairs[pair] = (
+            dislocated
         )
 
-    return pd.DataFrame(events)
+    return pd.DataFrame(
+        events
+    )
+
+
+def detect_recovery_events(
+    market_state: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    For every detected dislocation episode, find the
+    first subsequent observation for the same pool pair
+    where the spread falls below the recovery threshold.
+    """
+
+    dislocations = (
+        detect_dislocation_events(
+            market_state
+        )
+    )
+
+    if dislocations.empty:
+        return pd.DataFrame()
+
+    ordered = (
+        market_state
+        .sort_values(
+            [
+                "block_number",
+                "transaction_index",
+                "log_index",
+            ]
+        )
+        .reset_index(drop=True)
+    )
+
+    results = []
+
+    for _, event in (
+        dislocations.iterrows()
+    ):
+
+        pair = {
+            event["pool_a"],
+            event["pool_b"],
+        }
+
+        start_time = (
+            event["timestamp"]
+        )
+
+        candidates = ordered[
+            (
+                ordered["timestamp"]
+                >= start_time
+            )
+        ]
+
+        recovery_time = pd.NaT
+        recovery_seconds = np.nan
+
+        for _, row in (
+            candidates.iterrows()
+        ):
+
+            row_pair = {
+                row["pool_a"],
+                row["pool_b"],
+            }
+
+            if row_pair != pair:
+                continue
+
+            elapsed = (
+                row["timestamp"]
+                - start_time
+            ).total_seconds()
+
+            if elapsed < 0:
+                continue
+
+            if (
+                elapsed
+                >
+                MAX_RECOVERY_SECONDS
+            ):
+                break
+
+            if (
+                row["spread_bps"]
+                <=
+                RECOVERY_THRESHOLD_BPS
+            ):
+
+                recovery_time = (
+                    row[
+                        "timestamp"
+                    ]
+                )
+
+                recovery_seconds = (
+                    float(elapsed)
+                )
+
+                break
+
+        results.append(
+            {
+                **event.to_dict(),
+
+                "recovery_time":
+                    recovery_time,
+
+                "recovery_seconds":
+                    recovery_seconds,
+            }
+        )
+
+    return pd.DataFrame(
+        results
+    )
+
+
+def identify_candidate_arbitrage_events(
+    market_state: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Extract observations where the cross-pool edge
+    remains positive after accounting for both
+    Uniswap pool fees.
+
+    These are only candidate signals, not guaranteed
+    executable arbitrage opportunities.
+    """
+
+    if market_state.empty:
+        return pd.DataFrame()
+
+    candidates = market_state[
+        market_state[
+            "fee_adjusted_edge_bps"
+        ] > 0
+    ].copy()
+
+    return (
+        candidates
+        .sort_values(
+            "fee_adjusted_edge_bps",
+            ascending=False,
+        )
+        .reset_index(drop=True)
+    )
 
 
 def plot_pool_prices(
@@ -573,10 +847,14 @@ def plot_pool_prices(
     for (
         fee_tier,
         group
-    ) in swaps.groupby("fee_tier"):
+    ) in swaps.groupby(
+        "fee_tier"
+    ):
 
-        group = group.sort_values(
-            "timestamp"
+        group = (
+            group.sort_values(
+                "timestamp"
+            )
         )
 
         plt.plot(
@@ -589,8 +867,13 @@ def plot_pool_prices(
             alpha=0.8,
         )
 
-    plt.xlabel("Time")
-    plt.ylabel("USDC per WETH")
+    plt.xlabel(
+        "Time"
+    )
+
+    plt.ylabel(
+        "USDC per WETH"
+    )
 
     plt.title(
         "Uniswap v3 WETH/USDC "
@@ -613,21 +896,27 @@ def plot_pool_prices(
 
 
 def plot_spread_distribution(
-    matches: pd.DataFrame,
+    market_state: pd.DataFrame,
 ) -> None:
 
-    if matches.empty:
+    if market_state.empty:
         return
 
-    usable = matches[
-        "spread_bps"
-    ].dropna()
+    usable = (
+        market_state[
+            "spread_bps"
+        ]
+        .dropna()
+    )
 
     if usable.empty:
         return
 
-    # Trim only extreme visualization outliers.
-    upper = usable.quantile(0.99)
+    upper = (
+        usable.quantile(
+            0.99
+        )
+    )
 
     displayed = usable[
         usable <= upper
@@ -643,11 +932,12 @@ def plot_spread_distribution(
     )
 
     plt.xlabel(
-        "Cross-pool spread (basis points)"
+        "Cross-pool spread "
+        "(basis points)"
     )
 
     plt.ylabel(
-        "Observations"
+        "Market-state observations"
     )
 
     plt.title(
@@ -659,7 +949,8 @@ def plot_spread_distribution(
 
     plt.savefig(
         OUTPUT_DIR
-        / "02_spread_distribution.png",
+        /
+        "02_spread_distribution.png",
         dpi=180,
     )
 
@@ -667,20 +958,21 @@ def plot_spread_distribution(
 
 
 def plot_swap_size_vs_spread(
-    matches: pd.DataFrame,
+    market_state: pd.DataFrame,
 ) -> None:
 
-    if matches.empty:
+    if market_state.empty:
         return
 
-    usable = matches[
+    usable = market_state[
         (
-            matches[
-                "larger_swap_usd"
+            market_state[
+                "trigger_swap_usd"
             ] > 0
         )
-        & (
-            matches[
+        &
+        (
+            market_state[
                 "spread_bps"
             ].notna()
         )
@@ -694,33 +986,41 @@ def plot_swap_size_vs_spread(
     )
 
     plt.scatter(
-        usable["larger_swap_usd"],
-        usable["spread_bps"],
-        alpha=0.3,
+        usable[
+            "trigger_swap_usd"
+        ],
+        usable[
+            "spread_bps"
+        ],
+        alpha=0.25,
         s=12,
     )
 
-    plt.xscale("log")
+    plt.xscale(
+        "log"
+    )
 
     plt.xlabel(
-        "Larger matched swap size "
+        "Trigger swap size "
         "(USD, log scale)"
     )
 
     plt.ylabel(
-        "Cross-pool spread (bps)"
+        "Cross-pool spread "
+        "(bps)"
     )
 
     plt.title(
-        "Swap Size vs Cross-Pool "
-        "Price Dislocation"
+        "Trigger Swap Size vs "
+        "Cross-Pool Price Dislocation"
     )
 
     plt.tight_layout()
 
     plt.savefig(
         OUTPUT_DIR
-        / "03_swap_size_vs_spread.png",
+        /
+        "03_swap_size_vs_spread.png",
         dpi=180,
     )
 
@@ -730,6 +1030,15 @@ def plot_swap_size_vs_spread(
 def plot_recovery_times(
     recovery: pd.DataFrame,
 ) -> None:
+
+    output_path = (
+        OUTPUT_DIR
+        / "04_recovery_times.png"
+    )
+
+    # Remove stale chart from an earlier run.
+    if output_path.exists():
+        output_path.unlink()
 
     if recovery.empty:
         return
@@ -750,27 +1059,36 @@ def plot_recovery_times(
 
     plt.hist(
         usable,
-        bins=40,
+        bins=min(
+            40,
+            max(
+                5,
+                len(
+                    usable.unique()
+                )
+                * 2,
+            ),
+        ),
     )
 
     plt.xlabel(
-        "Recovery time (seconds)"
+        "Recovery time "
+        "(seconds)"
     )
 
     plt.ylabel(
-        "Dislocation events"
+        "Dislocation episodes"
     )
 
     plt.title(
-        "Time for Price Dislocations "
-        "to Revert"
+        "Time for Cross-Pool "
+        "Price Dislocations to Recover"
     )
 
     plt.tight_layout()
 
     plt.savefig(
-        OUTPUT_DIR
-        / "04_recovery_times.png",
+        output_path,
         dpi=180,
     )
 
@@ -781,7 +1099,9 @@ def run_analysis() -> dict:
 
     prepare_output_directory()
 
-    raw = load_swaps_dataframe()
+    raw = (
+        load_swaps_dataframe()
+    )
 
     if raw.empty:
         raise RuntimeError(
@@ -789,101 +1109,139 @@ def run_analysis() -> dict:
             "Run collection first."
         )
 
-    swaps = normalize_swap_dataframe(
-        raw
+    swaps = (
+        normalize_swap_dataframe(
+            raw
+        )
     )
 
-    matches = build_cross_pool_matches(
-        swaps
+    market_state = (
+        build_market_state(
+            swaps
+        )
     )
 
-    activity = calculate_pool_activity(
-        swaps
+    activity = (
+        calculate_pool_activity(
+            swaps
+        )
     )
 
-    spread_summary = (
+    summary = (
         calculate_spread_summary(
-            matches
+            market_state
         )
     )
 
     size_analysis = (
         swap_size_analysis(
-            matches
+            market_state
         )
     )
 
-    recovery = detect_recovery_events(
-        matches
+    recovery = (
+        detect_recovery_events(
+            market_state
+        )
     )
+
+    arbitrage_candidates = (
+        identify_candidate_arbitrage_events(
+            market_state
+        )
+    )
+
+    if not recovery.empty:
+
+        usable_recovery = (
+            recovery[
+                "recovery_seconds"
+            ]
+            .dropna()
+        )
+
+        summary[
+            "dislocation_episodes"
+        ] = int(
+            len(recovery)
+        )
+
+        summary[
+            "recovered_event_count"
+        ] = int(
+            len(
+                usable_recovery
+            )
+        )
+
+        if not usable_recovery.empty:
+
+            summary[
+                "median_recovery_seconds"
+            ] = float(
+                usable_recovery.median()
+            )
+
+            summary[
+                "p90_recovery_seconds"
+            ] = float(
+                usable_recovery.quantile(
+                    0.90
+                )
+            )
 
     activity.to_csv(
         OUTPUT_DIR
-        / "pool_activity.csv",
+        /
+        "pool_activity.csv",
         index=False,
     )
 
     swaps.to_csv(
         OUTPUT_DIR
-        / "processed_swaps.csv",
+        /
+        "processed_swaps.csv",
         index=False,
     )
 
-    matches.to_csv(
+    market_state.to_csv(
         OUTPUT_DIR
-        / "cross_pool_matches.csv",
+        /
+        "market_state.csv",
         index=False,
     )
 
     size_analysis.to_csv(
         OUTPUT_DIR
-        / "swap_size_analysis.csv",
+        /
+        "swap_size_analysis.csv",
         index=False,
     )
 
     recovery.to_csv(
         OUTPUT_DIR
-        / "recovery_events.csv",
+        /
+        "recovery_events.csv",
         index=False,
     )
 
-    if not recovery.empty:
-
-        valid_recovery = recovery[
-            "recovery_seconds"
-        ].dropna()
-
-        if not valid_recovery.empty:
-
-            spread_summary[
-                "median_recovery_seconds"
-            ] = float(
-                valid_recovery.median()
-            )
-
-            spread_summary[
-                "p90_recovery_seconds"
-            ] = float(
-                valid_recovery.quantile(
-                    0.90
-                )
-            )
-
-            spread_summary[
-                "recovered_event_count"
-            ] = int(
-                len(valid_recovery)
-            )
+    arbitrage_candidates.to_csv(
+        OUTPUT_DIR
+        /
+        "arbitrage_candidates.csv",
+        index=False,
+    )
 
     with open(
         OUTPUT_DIR
-        / "summary.json",
+        /
+        "summary.json",
         "w",
         encoding="utf-8",
     ) as file:
 
         json.dump(
-            spread_summary,
+            summary,
             file,
             indent=2,
         )
@@ -893,11 +1251,11 @@ def run_analysis() -> dict:
     )
 
     plot_spread_distribution(
-        matches
+        market_state
     )
 
     plot_swap_size_vs_spread(
-        matches
+        market_state
     )
 
     plot_recovery_times(
@@ -908,18 +1266,23 @@ def run_analysis() -> dict:
         "raw_swaps":
             len(raw),
 
+        "market_state_observations":
+            len(
+                market_state
+            ),
+
         "pool_activity":
             activity,
 
-        "matches":
-            len(matches),
-
         "summary":
-            spread_summary,
+            summary,
 
         "swap_size_analysis":
             size_analysis,
 
         "recovery":
             recovery,
+
+        "arbitrage_candidates":
+            arbitrage_candidates,
     }
